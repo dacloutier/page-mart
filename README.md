@@ -2,6 +2,9 @@
 
 A single static HTML page bookmark manager with tabbed organization, custom styling, and local storage persistence.
 
+## Installation Instructions
+Download the minified version called page-mart.html locally, open it in your favourite browser.
+
 ---
 
 ## Overview
