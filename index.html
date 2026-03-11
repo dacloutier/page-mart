@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>page-mart</title>
+  <script src="lib/react.development.js"></script>
+  <script src="lib/react-dom.development.js"></script>
+  <script src="lib/babel.min.js"></script>
+  <style>
+    :root {
+      --bg:               #f0f2f5;
+      --surface:          #ffffff;
+      --surface-alt:      #fafafa;
+      --surface-hover:    #f5f7fa;
+      --border:           #eeeeee;
+      --border-mid:       #dddddd;
+      --text:             #333333;
+      --text-muted:       #aaaaaa;
+      --shadow:           rgba(0,0,0,0.08);
+      --shadow-md:        rgba(0,0,0,0.18);
+      --input-bg:         #ffffff;
+      --btn-2-bg:         #f0f0f0;
+      --btn-2-text:       #444444;
+      --ghost-border:     #cccccc;
+      --icon-color:       #666666;
+    }
+    body.dark {
+      --bg:               #111111;
+      --surface:          #1c1c1c;
+      --surface-alt:      #242424;
+      --surface-hover:    #2a2a2a;
+      --border:           #2e2e2e;
+      --border-mid:       #3a3a3a;
+      --text:             #e0e0e0;
+      --text-muted:       #888888;
+      --shadow:           rgba(0,0,0,0.4);
+      --shadow-md:        rgba(0,0,0,0.6);
+      --input-bg:         #2a2a2a;
+      --btn-2-bg:         #2a2a2a;
+      --btn-2-text:       #cccccc;
+      --ghost-border:     #444444;
+      --icon-color:       #aaaaaa;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    button:focus { outline: none; }
+    input:focus { outline: none; }
+    textarea:focus { outline: none; }
+    a { color: inherit; }
+    ::-webkit-scrollbar { height: 4px; width: 4px; }
+    ::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 4px; }
+    /* Link controls visible on row hover */
+    .link-row:hover .link-controls { opacity: 1 !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // ─── Module-level DnD state ──────────────────────────────────────────────────
+    // Using a plain var avoids prop-drilling and dataTransfer type limitations.
+    let activeDrag = null;
+    // Shape: { type: 'tab'|'box'|'link', id, sourceTabId?, sourceBoxId? }
+
+    // ─── Storage ─────────────────────────────────────────────────────────────────
+
+    const STORAGE_KEY = 'page-mart';
+
+    function loadState() {
+      try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : null; }
+      catch { return null; }
+    }
+
+    function saveState(state) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+    function makeInitialState() {
+      const tabId = crypto.randomUUID();
+      return { tabs: [{ id: tabId, name: 'Home', color: '#4A90D9', order: 0, boxes: [] }], activeTabId: tabId };
+    }
+
+    // ─── Shared Styles ───────────────────────────────────────────────────────────
+
+    const S = {
+      inputBase:    { padding: '6px 8px', border: '1px solid var(--border-mid)', borderRadius: 6, fontSize: 13, width: '100%', background: 'var(--input-bg)', color: 'var(--text)' },
+      btnPrimary:   { padding: '7px 16px', background: '#4A90D9', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 500 },
+      btnSecondary: { padding: '7px 14px', background: 'var(--btn-2-bg)', color: 'var(--btn-2-text)', border: '1px solid var(--border-mid)', borderRadius: 6, cursor: 'pointer', fontSize: 13 },
+      btnDanger:    { padding: '7px 16px', background: '#e74c3c', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13 },
+      btnGhost:     { background: 'none', border: '1px dashed var(--ghost-border)', borderRadius: 6, padding: '6px 12px', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 13 },
+      iconBtn:      { background: 'none', border: 'none', cursor: 'pointer', padding: '2px 5px', fontSize: 14, lineHeight: 1, color: 'var(--icon-color)', borderRadius: 4 },
+    };
+
+    // ─── Utilities ───────────────────────────────────────────────────────────────
+
+    function uid() { return crypto.randomUUID(); }
+
+    function isDark(hex) {
+      const h = hex.replace('#', '');
+      const r = parseInt(h.substr(0, 2), 16), g = parseInt(h.substr(2, 2), 16), b = parseInt(h.substr(4, 2), 16);
+      return (r * 299 + g * 587 + b * 114) / 1000 < 145;
+    }
+
+    function faviconUrl(rawUrl) {
+      try { const u = new URL(rawUrl); return `${u.protocol}//${u.hostname}/favicon.ico`; }
+      catch { return ''; }
+    }
+
+    // ─── ColorSwatch ─────────────────────────────────────────────────────────────
+
+    function ColorSwatch({ color, onChange }) {
+      const ref = useRef();
+      return (
+        <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+          <span onClick={e => { e.stopPropagation(); ref.current.click(); }} title="Change color"
+            style={{ display: 'inline-block', width: 16, height: 16, borderRadius: 3, background: color, border: '2px solid rgba(255,255,255,0.5)', cursor: 'pointer', flexShrink: 0 }} />
+          <input ref={ref} type="color" value={color} onChange={e => onChange(e.target.value)}
+            onClick={e => e.stopPropagation()}
+            style={{ position: 'absolute', opacity: 0, width: 0, height: 0, pointerEvents: 'none' }} />
+        </span>
+      );
+    }
+
+    // ─── InlineEdit ──────────────────────────────────────────────────────────────
+
+    function InlineEdit({ value, onSave, style = {} }) {
+      const [editing, setEditing] = useState(false);
+      const [draft, setDraft] = useState(value);
+      const ref = useRef();
+
+      useEffect(() => { if (editing && ref.current) ref.current.select(); }, [editing]);
+
+      const commit = () => {
+        const v = draft.trim();
+        if (v) onSave(v); else setDraft(value);
+        setEditing(false);
+      };
+
+      if (editing) {
+        return (
+          <input ref={ref} value={draft} onChange={e => setDraft(e.target.value)} onBlur={commit}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } if (e.key === 'Escape') { setDraft(value); setEditing(false); } }}
+            onClick={e => e.stopPropagation()} draggable={false}
+            style={{ ...style, border: '1px solid rgba(255,255,255,0.6)', borderRadius: 4, padding: '1px 4px', background: 'rgba(255,255,255,0.2)', fontSize: 'inherit', fontWeight: 'inherit', color: 'inherit', width: '100%' }} />
+        );
+      }
+
+      return (
+        <span onDoubleClick={e => { e.stopPropagation(); setEditing(true); }} title="Double-click to rename"
+          style={{ cursor: 'default', ...style, display: 'block', minWidth: 20 }}>
+          {value}
+        </span>
+      );
+    }
+
+    // ─── Modal ───────────────────────────────────────────────────────────────────
+
+    function Modal({ title, onClose, children }) {
+      return (
+        <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 16 }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: 'var(--surface)', borderRadius: 10, padding: 24, width: '100%', maxWidth: 520, boxShadow: '0 8px 40px var(--shadow-md)', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <h2 style={{ fontSize: 18, fontWeight: 700 }}>{title}</h2>
+              <button onClick={onClose} style={{ ...S.iconBtn, fontSize: 22 }}>×</button>
+            </div>
+            {children}
+          </div>
+        </div>
+      );
+    }
+
+
+    // ─── LinkItem ────────────────────────────────────────────────────────────────
+
+    function LinkItem({ link, boxId, onUpdate, onDelete, isFirst, isLast, onMoveUp, onMoveDown,
+                        dropIndicator, onDragOver, onDragLeave, onDrop }) {
+      const [editing, setEditing] = useState(false);
+      const [draft, setDraft] = useState({ label: link.label, url: link.url, icon: link.icon });
+
+      const handleDragStart = (e) => {
+        activeDrag = { type: 'link', id: link.id, sourceBoxId: boxId };
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', link.id);
+        e.stopPropagation(); // prevent box from also starting a drag
+      };
+
+      const save = () => {
+        const label = draft.label.trim(), url = draft.url.trim();
+        if (label && url) onUpdate({ ...link, label, url, icon: draft.icon.trim() });
+        setEditing(false);
+      };
+
+      if (editing) {
+        return (
+          <div style={{ padding: '8px 12px', background: 'var(--surface-alt)', borderTop: '1px solid var(--border)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input value={draft.url} placeholder="URL" onChange={e => setDraft(d => ({ ...d, url: e.target.value }))} style={S.inputBase} autoFocus />
+              <input value={draft.label} placeholder="Label" onChange={e => setDraft(d => ({ ...d, label: e.target.value }))} style={S.inputBase} />
+              <input value={draft.icon} placeholder="Icon URL (optional)" onChange={e => setDraft(d => ({ ...d, icon: e.target.value }))} style={S.inputBase} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={save} style={S.btnPrimary}>Save</button>
+                <button onClick={() => setEditing(false)} style={S.btnSecondary}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div draggable
+          onDragStart={handleDragStart}
+          onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+          className="link-row"
+          style={{
+            cursor: 'grab',
+            borderTop: dropIndicator === 'above' ? '2px solid #4A90D9' : '1px solid var(--border)',
+            borderBottom: dropIndicator === 'below' ? '2px solid #4A90D9' : 'none',
+          }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <a href={link.url} target="_blank" rel="noopener noreferrer" draggable={false}
+              onMouseDown={e => { if (e.button !== 0) e.preventDefault(); }}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, textDecoration: 'none', color: 'var(--text)', padding: '6px 12px', minWidth: 0, overflow: 'hidden' }}
+              title={link.url}>
+              {link.icon
+                ? <img src={link.icon} width={14} height={14} style={{ flexShrink: 0, objectFit: 'contain' }} onError={e => { e.target.style.display = 'none'; }} draggable={false} />
+                : <span style={{ width: 14, height: 14, background: '#e0e0e0', borderRadius: 2, flexShrink: 0, display: 'inline-block' }} />}
+              <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{link.label}</span>
+            </a>
+            <div className="link-controls" style={{ display: 'flex', gap: 0, flexShrink: 0, paddingRight: 6, opacity: 0 }}>
+              <button onClick={e => { e.stopPropagation(); onMoveUp(); }} disabled={isFirst} style={{ ...S.iconBtn, fontSize: 12 }} title="Move up">↑</button>
+              <button onClick={e => { e.stopPropagation(); onMoveDown(); }} disabled={isLast} style={{ ...S.iconBtn, fontSize: 12 }} title="Move down">↓</button>
+              <button onClick={e => { e.stopPropagation(); setDraft({ label: link.label, url: link.url, icon: link.icon }); setEditing(true); }} style={{ ...S.iconBtn, fontSize: 12 }} title="Edit">✎</button>
+              <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ ...S.iconBtn, color: '#e74c3c', fontSize: 14 }} title="Delete">×</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── AddLinkForm ─────────────────────────────────────────────────────────────
+
+    function AddLinkForm({ onAdd, onCancel }) {
+      const [url, setUrl] = useState('');
+      const [label, setLabel] = useState('');
+
+      const handleUrlBlur = () => {
+        if (url && !label) {
+          try { const u = new URL(url); setLabel(u.hostname.replace(/^www\./, '')); } catch {}
+        }
+      };
+
+      const submit = () => {
+        const trimUrl = url.trim(), trimLabel = label.trim();
+        if (!trimUrl || !trimLabel) return;
+        onAdd({ id: uid(), label: trimLabel, url: trimUrl, icon: faviconUrl(trimUrl), order: 0 });
+        setUrl(''); setLabel('');
+      };
+
+      return (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid var(--border)', background: 'var(--surface-alt)' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <input value={url} placeholder="URL" autoFocus onChange={e => setUrl(e.target.value)} onBlur={handleUrlBlur}
+              onKeyDown={e => { if (e.key === 'Escape') onCancel(); }} style={S.inputBase} />
+            <input value={label} placeholder="Label" onChange={e => setLabel(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }} style={S.inputBase} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={submit} style={S.btnPrimary}>Add</button>
+              <button onClick={onCancel} style={S.btnSecondary}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── SubBoxCard ──────────────────────────────────────────────────────────────
+    // Rendered inside a BoxCard. Supports minimize/maximize, link editing, link DnD.
+    // Drag its header to extract back to a column.
+
+    function SubBoxCard({ box, onUpdate, onDelete, onDragStart, onDropLink }) {
+      const [addingLink, setAddingLink] = useState(false);
+      const [headerHover, setHeaderHover] = useState(false);
+      const [linkDrop, setLinkDrop] = useState(null);
+      const [emptyOver, setEmptyOver] = useState(false);
+      const emptyEnterCount = useRef(0);
+      const textColor = isDark(box.color) ? '#fff' : '#222';
+      const minimized = box.minimized || false;
+
+      const handleLinkDragOver = (linkId, e) => {
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        e.preventDefault(); e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const position = e.clientY < rect.top + rect.height / 2 ? 'above' : 'below';
+        setLinkDrop(prev => (prev?.linkId === linkId && prev?.position === position) ? prev : { linkId, position });
+      };
+      const handleLinkDrop = (linkId, e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        const pos = linkDrop?.position || 'below';
+        const idx = box.links.findIndex(l => l.id === linkId);
+        onDropLink(activeDrag.id, activeDrag.sourceBoxId, box.id, pos === 'above' ? idx : idx + 1);
+        setLinkDrop(null); activeDrag = null;
+      };
+      const handleEmptyDragEnter = () => { if (!activeDrag || activeDrag.type !== 'link') return; emptyEnterCount.current++; setEmptyOver(true); };
+      const handleEmptyDragLeave = () => { if (!activeDrag || activeDrag.type !== 'link') return; if (--emptyEnterCount.current <= 0) { emptyEnterCount.current = 0; setEmptyOver(false); } };
+      const handleEmptyDragOver = e => { if (activeDrag?.type === 'link') e.preventDefault(); };
+      const handleEmptyDrop = e => {
+        e.preventDefault(); e.stopPropagation();
+        emptyEnterCount.current = 0; setEmptyOver(false);
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        onDropLink(activeDrag.id, activeDrag.sourceBoxId, box.id, box.links.length);
+        activeDrag = null;
+      };
+
+      const setLinks = links => onUpdate({ ...box, links });
+      const updateLink = u => setLinks(box.links.map(l => l.id === u.id ? u : l));
+      const deleteLink = id => setLinks(box.links.filter(l => l.id !== id));
+      const addLink = link => { setLinks([...box.links, { ...link, order: box.links.length }]); setAddingLink(false); };
+      const moveLinkUp = idx => {
+        if (idx === 0) return;
+        const ls = [...box.links]; [ls[idx - 1], ls[idx]] = [ls[idx], ls[idx - 1]];
+        setLinks(ls.map((l, i) => ({ ...l, order: i })));
+      };
+      const moveLinkDown = idx => {
+        if (idx === box.links.length - 1) return;
+        const ls = [...box.links]; [ls[idx], ls[idx + 1]] = [ls[idx + 1], ls[idx]];
+        setLinks(ls.map((l, i) => ({ ...l, order: i })));
+      };
+
+      return (
+        <div style={{ background: 'var(--surface)', borderRadius: 6, border: '1px solid var(--border-mid)', marginBottom: 6 }}>
+          <div draggable onDragStart={e => { onDragStart(e); e.stopPropagation(); }}
+            onMouseEnter={() => setHeaderHover(true)} onMouseLeave={() => setHeaderHover(false)}
+            style={{ background: box.color, padding: '5px 8px', display: 'flex', alignItems: 'center', gap: 5, cursor: 'grab', userSelect: 'none', borderRadius: minimized ? 6 : '6px 6px 0 0' }}>
+            <ColorSwatch color={box.color} onChange={c => onUpdate({ ...box, color: c })} />
+            <button onClick={e => { e.stopPropagation(); onUpdate({ ...box, minimized: !minimized }); }}
+              title={minimized ? 'Expand' : 'Collapse'}
+              style={{ ...S.iconBtn, color: textColor, fontSize: 9, padding: '1px 4px', lineHeight: 1, opacity: 0.85 }}>
+              {minimized ? '▶' : '▼'}
+            </button>
+            <InlineEdit value={box.name} onSave={name => onUpdate({ ...box, name })}
+              style={{ flex: 1, fontWeight: 600, fontSize: 13, color: textColor }} />
+            {headerHover && (
+              <button onClick={onDelete} title="Delete" style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 15 }}>×</button>
+            )}
+          </div>
+          {!minimized && (
+            <div onDragEnter={handleEmptyDragEnter} onDragLeave={handleEmptyDragLeave}
+              onDragOver={handleEmptyDragOver} onDrop={handleEmptyDrop}
+              style={{ background: emptyOver ? 'rgba(74,144,217,0.12)' : 'transparent', borderRadius: '0 0 6px 6px', transition: 'background 0.1s' }}>
+              {box.links.map((link, idx) => (
+                <LinkItem key={link.id} link={link} boxId={box.id}
+                  onUpdate={updateLink} onDelete={() => deleteLink(link.id)}
+                  isFirst={idx === 0} isLast={idx === box.links.length - 1}
+                  onMoveUp={() => moveLinkUp(idx)} onMoveDown={() => moveLinkDown(idx)}
+                  dropIndicator={linkDrop?.linkId === link.id ? linkDrop.position : null}
+                  onDragOver={e => handleLinkDragOver(link.id, e)}
+                  onDragLeave={() => setLinkDrop(prev => prev?.linkId === link.id ? null : prev)}
+                  onDrop={e => handleLinkDrop(link.id, e)}
+                />
+              ))}
+              {addingLink
+                ? <AddLinkForm onAdd={addLink} onCancel={() => setAddingLink(false)} />
+                : (
+                  <div style={{ padding: '4px 10px 8px' }}>
+                    <button onClick={() => setAddingLink(true)} style={{ ...S.btnGhost, fontSize: 11, width: '100%' }}>+ Add link</button>
+                  </div>
+                )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── BoxCard ─────────────────────────────────────────────────────────────────
+
+    function BoxCard({ box, tabId, onUpdate, onDelete,
+                       dropSide, onBoxDragOver, onBoxDragLeave, onBoxDrop,
+                       onDropLink, onNestBox, dragWidth, onWidthDrag }) {
+      const [addingLink, setAddingLink] = useState(false);
+      const [headerHover, setHeaderHover] = useState(false);
+      const [linkDrop, setLinkDrop] = useState(null); // { linkId, position: 'above'|'below' }
+      const [emptyOver, setEmptyOver] = useState(false);
+      const [localHeight, setLocalHeight] = useState(null);
+      const emptyEnterCount = useRef(0);
+      const boxRef = useRef();
+
+      const textColor     = isDark(box.color) ? '#fff' : '#222';
+      const displayWidth  = dragWidth ?? (box.width || 260);
+      const displayHeight = localHeight ?? (box.height || null); // null = auto
+
+      // ── Req 2: Resize — width + height, min height = natural content height ────
+      const handleResizeDown = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const startX = e.clientX, startY = e.clientY;
+        const startW = displayWidth;
+        const startH = box.height || boxRef.current.offsetHeight;
+        // Natural content height: header + sum of each link row / add-link button child.
+        // Can't use linksArea.scrollHeight because it's flex:1 and grows with the container.
+        const header       = boxRef.current.children[0];
+        const linksArea    = boxRef.current.children[1];
+        const subBoxesArea = boxRef.current.children[2];
+        const contentH     = Array.from(linksArea.children).reduce((s, c) => s + c.offsetHeight, 0);
+        const minH = header.offsetHeight + contentH + (subBoxesArea ? subBoxesArea.offsetHeight : 0);
+        const onMove = mv => {
+          onWidthDrag(Math.max(180, startW + mv.clientX - startX));
+          setLocalHeight(Math.max(minH, startH + mv.clientY - startY));
+        };
+        const onUp = mv => {
+          onWidthDrag(null); setLocalHeight(null);
+          onUpdate({
+            ...box,
+            width:  Math.max(180, startW + mv.clientX - startX),
+            height: Math.max(minH, startH + mv.clientY - startY),
+          });
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+      };
+
+      // ── Req 1: Box drag — header is the handle ─────────────────────────────────
+      const handleBoxDragStart = (e) => {
+        activeDrag = { type: 'box', id: box.id, sourceTabId: tabId };
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', box.id);
+      };
+
+      // ── Req 1: Link DnD within / into this box ─────────────────────────────────
+      const handleLinkDragOver = (linkId, e) => {
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        e.preventDefault(); e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const position = e.clientY < rect.top + rect.height / 2 ? 'above' : 'below';
+        setLinkDrop(prev => (prev?.linkId === linkId && prev?.position === position) ? prev : { linkId, position });
+      };
+
+      const handleLinkDrop = (linkId, e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        const pos = linkDrop?.position || 'below';
+        const idx = box.links.findIndex(l => l.id === linkId);
+        onDropLink(activeDrag.id, activeDrag.sourceBoxId, box.id, pos === 'above' ? idx : idx + 1);
+        setLinkDrop(null);
+        activeDrag = null;
+      };
+
+      // Drop link on the empty/padding area → append to end
+      const handleEmptyDragEnter = () => {
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        emptyEnterCount.current++;
+        setEmptyOver(true);
+      };
+      const handleEmptyDragLeave = () => {
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        if (--emptyEnterCount.current <= 0) { emptyEnterCount.current = 0; setEmptyOver(false); }
+      };
+      const handleEmptyDragOver = e => { if (activeDrag?.type === 'link') e.preventDefault(); };
+      const handleEmptyDrop = e => {
+        e.preventDefault(); e.stopPropagation();
+        emptyEnterCount.current = 0; setEmptyOver(false);
+        if (!activeDrag || activeDrag.type !== 'link') return;
+        onDropLink(activeDrag.id, activeDrag.sourceBoxId, box.id, box.links.length);
+        activeDrag = null;
+      };
+
+      // ── Link CRUD ──────────────────────────────────────────────────────────────
+      const setLinks = links => onUpdate({ ...box, links });
+      const updateLink = u => setLinks(box.links.map(l => l.id === u.id ? u : l));
+      const deleteLink = id => setLinks(box.links.filter(l => l.id !== id));
+      const addLink = link => { setLinks([...box.links, { ...link, order: box.links.length }]); setAddingLink(false); };
+      const moveLinkUp = idx => {
+        if (idx === 0) return;
+        const ls = [...box.links]; [ls[idx - 1], ls[idx]] = [ls[idx], ls[idx - 1]];
+        setLinks(ls.map((l, i) => ({ ...l, order: i })));
+      };
+      const moveLinkDown = idx => {
+        if (idx === box.links.length - 1) return;
+        const ls = [...box.links]; [ls[idx], ls[idx + 1]] = [ls[idx + 1], ls[idx]];
+        setLinks(ls.map((l, i) => ({ ...l, order: i })));
+      };
+
+      // ── Sub-box CRUD ───────────────────────────────────────────────────────────
+      const addSubBox = () => {
+        const sub = { id: uid(), name: 'Sub-box', color: '#7B68EE', order: (box.boxes || []).length, links: [], boxes: [], minimized: false };
+        onUpdate({ ...box, boxes: [...(box.boxes || []), sub] });
+      };
+      const updateSubBox = updated => onUpdate({ ...box, boxes: (box.boxes || []).map(b => b.id === updated.id ? updated : b) });
+      const deleteSubBox = id => onUpdate({ ...box, boxes: (box.boxes || []).filter(b => b.id !== id) });
+
+      return (
+        <div ref={boxRef} onDragOver={onBoxDragOver} onDragLeave={onBoxDragLeave} onDrop={onBoxDrop}
+          style={{
+            background: 'var(--surface)', borderRadius: 8, position: 'relative',
+            boxShadow: '0 1px 4px var(--shadow)',
+            width: displayWidth, height: displayHeight || undefined,
+            flexShrink: 0, display: 'flex', flexDirection: 'column',
+            borderTop:    dropSide === 'above' ? '3px solid #4A90D9' : '3px solid transparent',
+            borderBottom: dropSide === 'below' ? '3px solid #4A90D9' : '3px solid transparent',
+            outline: dropSide === 'nest' ? '2px dashed #4A90D9' : 'none',
+            outlineOffset: -2,
+          }}>
+
+          {/* Header — drag handle for the whole box */}
+          <div draggable onDragStart={handleBoxDragStart}
+            onMouseEnter={() => setHeaderHover(true)} onMouseLeave={() => setHeaderHover(false)}
+            style={{ background: box.color, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 6, cursor: 'grab', borderRadius: '8px 8px 0 0', flexShrink: 0 }}>
+            <ColorSwatch color={box.color} onChange={c => onUpdate({ ...box, color: c })} />
+            <InlineEdit value={box.name} onSave={name => onUpdate({ ...box, name })}
+              style={{ flex: 1, fontWeight: 600, fontSize: 14, color: textColor }} />
+            {headerHover && (
+              <div style={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+                <button onClick={onDelete} title="Delete box"
+                  style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 16 }}>×</button>
+              </div>
+            )}
+          </div>
+
+          {/* Links + empty-drop zone */}
+          <div onDragEnter={handleEmptyDragEnter} onDragLeave={handleEmptyDragLeave}
+            onDragOver={handleEmptyDragOver} onDrop={handleEmptyDrop}
+            style={{ flex: 1, minHeight: 0, overflowY: displayHeight ? 'auto' : 'visible', background: emptyOver ? 'rgba(74,144,217,0.12)' : 'transparent', transition: 'background 0.1s' }}>
+            {box.links.map((link, idx) => (
+              <LinkItem key={link.id} link={link} boxId={box.id}
+                onUpdate={updateLink} onDelete={() => deleteLink(link.id)}
+                isFirst={idx === 0} isLast={idx === box.links.length - 1}
+                onMoveUp={() => moveLinkUp(idx)} onMoveDown={() => moveLinkDown(idx)}
+                dropIndicator={linkDrop?.linkId === link.id ? linkDrop.position : null}
+                onDragOver={e => handleLinkDragOver(link.id, e)}
+                onDragLeave={() => setLinkDrop(prev => prev?.linkId === link.id ? null : prev)}
+                onDrop={e => handleLinkDrop(link.id, e)}
+              />
+            ))}
+            {addingLink
+              ? <AddLinkForm onAdd={addLink} onCancel={() => setAddingLink(false)} />
+              : (
+                <div style={{ padding: '6px 12px 10px' }}>
+                  <button onClick={() => setAddingLink(true)} style={{ ...S.btnGhost, fontSize: 12, width: '100%' }}>+ Add link</button>
+                </div>
+              )}
+          </div>
+
+          {/* Sub-boxes tray */}
+          <div style={{
+              borderTop: '1px solid var(--border)',
+              background: dropSide === 'nest' ? 'rgba(74,144,217,0.07)' : 'var(--surface-alt)',
+              borderRadius: '0 0 8px 8px', padding: '6px 8px 8px',
+              transition: 'background 0.1s',
+            }}>
+            {(box.boxes || []).map(subBox => (
+              <SubBoxCard key={subBox.id} box={subBox}
+                onUpdate={updateSubBox}
+                onDelete={() => deleteSubBox(subBox.id)}
+                onDragStart={e => {
+                  activeDrag = { type: 'box', id: subBox.id, sourceParentBoxId: box.id };
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', subBox.id);
+                }}
+                onDropLink={onDropLink}
+              />
+            ))}
+            {dropSide === 'nest'
+              ? <div style={{ color: '#4A90D9', fontSize: 11, textAlign: 'center', padding: '4px 0' }}>Drop to nest</div>
+              : <button onClick={addSubBox} style={{ ...S.btnGhost, fontSize: 11, width: '100%', padding: '4px 8px' }}>+ Sub-box</button>
+            }
+          </div>
+
+          {/* Req 2: Resize handle — drag to resize width + height */}
+          <div onMouseDown={handleResizeDown} draggable={false} title="Drag to resize"
+            style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: 2 }}>
+            <svg width="10" height="10" viewBox="0 0 10 10" style={{ opacity: 0.22 }}>
+              <line x1="10" y1="2" x2="2" y2="10" stroke="#333" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="10" y1="6" x2="6" y2="10" stroke="#333" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── TabItem ─────────────────────────────────────────────────────────────────
+
+    function TabItem({ tab, isActive, onSelect, onUpdate, onDelete, isFirst, isLast,
+                       onMoveLeft, onMoveRight, dropIndicator, onDragOver, onDragLeave, onDrop }) {
+      const [hover, setHover] = useState(false);
+
+      const handleDragStart = (e) => {
+        activeDrag = { type: 'tab', id: tab.id };
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', tab.id);
+      };
+
+      // dropIndicator can be: 'left' | 'right' (tab reorder) | 'box-target' (receive box)
+      const isBoxTarget = dropIndicator === 'box-target';
+
+      return (
+        <div draggable onDragStart={handleDragStart}
+          onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+          onClick={onSelect}
+          onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '0 10px', minHeight: 48, cursor: 'pointer',
+            userSelect: 'none', whiteSpace: 'nowrap', fontWeight: isActive ? 600 : 400,
+            borderBottom: isActive ? `3px solid ${tab.color}` : '3px solid transparent',
+            borderLeft:  dropIndicator === 'left'  ? '3px solid #4A90D9' : 'none',
+            borderRight: dropIndicator === 'right' ? '3px solid #4A90D9' : 'none',
+            background: isBoxTarget ? 'rgba(74,144,217,0.12)' : hover ? 'var(--surface-hover)' : 'transparent',
+            outline: isBoxTarget ? '2px dashed #4A90D9' : 'none',
+            outlineOffset: isBoxTarget ? -3 : 0,
+            borderRadius: isBoxTarget ? 4 : 0,
+            transition: 'background 0.1s',
+          }}>
+          <ColorSwatch color={tab.color} onChange={c => onUpdate({ ...tab, color: c })} />
+          <InlineEdit value={tab.name} onSave={name => onUpdate({ ...tab, name })}
+            style={{ fontSize: 14, color: 'var(--text)' }} />
+          {hover && (
+            <div style={{ display: 'flex', gap: 1 }}>
+              <button onClick={e => { e.stopPropagation(); onDelete(); }}
+                style={{ ...S.iconBtn, color: '#e74c3c', fontSize: 16 }} title="Delete tab">×</button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─── SettingsModal ────────────────────────────────────────────────────────────
+
+    function SettingsModal({ tabs, onImport, onClose }) {
+      const [importText, setImportText] = useState('');
+      const [importError, setImportError] = useState('');
+      const [copied, setCopied] = useState(false);
+      const exportJson = JSON.stringify({ tabs }, null, 2);
+
+      const handleCopy = () =>
+        navigator.clipboard.writeText(exportJson).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+
+      const handleImport = () => {
+        try {
+          const data = JSON.parse(importText);
+          if (!Array.isArray(data.tabs)) throw new Error();
+          if (window.confirm('This will overwrite all current data. Continue?')) { onImport(data.tabs); onClose(); }
+        } catch { setImportError('Invalid JSON. Must have a "tabs" array.'); }
+      };
+
+      return (
+        <Modal title="⚙ Settings" onClose={onClose}>
+          <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Export</h3>
+          <textarea readOnly value={exportJson} style={{ ...S.inputBase, height: 130, fontFamily: 'monospace', fontSize: 11, resize: 'vertical' }} />
+          <button onClick={handleCopy} style={{ ...S.btnPrimary, marginTop: 8 }}>{copied ? '✓ Copied!' : 'Copy to clipboard'}</button>
+          <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+          <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Import</h3>
+          <textarea value={importText} onChange={e => { setImportText(e.target.value); setImportError(''); }}
+            placeholder="Paste exported JSON here..." style={{ ...S.inputBase, height: 110, resize: 'vertical' }} />
+          {importError && <p style={{ color: '#e74c3c', fontSize: 12, marginTop: 4 }}>{importError}</p>}
+          <button onClick={handleImport} style={{ ...S.btnDanger, marginTop: 8 }}>Load (overwrites current data)</button>
+        </Modal>
+      );
+    }
+
+    // ─── App ─────────────────────────────────────────────────────────────────────
+
+    function App() {
+      const [{ tabs, activeTabId }, setState] = useState(() => {
+        const saved = loadState();
+        if (saved && Array.isArray(saved.tabs) && saved.tabs.length > 0)
+          return { tabs: saved.tabs, activeTabId: saved.activeTabId || saved.tabs[0].id };
+        return makeInitialState();
+      });
+
+      const [showSettings, setShowSettings]   = useState(false);
+
+      const [tabDrop, setTabDrop]             = useState(null); // { tabId, indicator }
+      const [boxDrop, setBoxDrop]             = useState(null); // { boxId, position }
+      const [colDrop, setColDrop]             = useState(null); // { colIdx }
+      const [newColOver, setNewColOver]       = useState(false);
+      const [colWidthDrag, setColWidthDrag]   = useState(null); // { col, width } during resize drag
+      const [dark, setDark]                   = useState(() => localStorage.getItem('page-mart-theme') === 'dark');
+
+      useEffect(() => { saveState({ tabs, activeTabId }); }, [tabs, activeTabId]);
+
+      useEffect(() => {
+        document.body.classList.toggle('dark', dark);
+        localStorage.setItem('page-mart-theme', dark ? 'dark' : 'light');
+      }, [dark]);
+
+      const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+      const resolvedActiveTabId = activeTab?.id;
+
+      const setTabs = fn => setState(s => ({ ...s, tabs: typeof fn === 'function' ? fn(s.tabs) : fn }));
+      const setActiveTabId = id => setState(s => ({ ...s, activeTabId: id }));
+
+      // ── DnD: move operations ──────────────────────────────────────────────────
+
+      const dndMoveTab = (fromId, toId, side) => {
+        setTabs(ts => {
+          const arr = [...ts];
+          const fromIdx = arr.findIndex(t => t.id === fromId);
+          if (fromIdx === -1) return ts;
+          const [moved] = arr.splice(fromIdx, 1);
+          const toIdx = arr.findIndex(t => t.id === toId);
+          if (toIdx === -1) { arr.splice(fromIdx, 0, moved); return ts; }
+          arr.splice(side === 'right' ? toIdx + 1 : toIdx, 0, moved);
+          return arr.map((t, i) => ({ ...t, order: i }));
+        });
+      };
+
+      // Nest a top-level box inside another box.
+      const dndNestBox = (boxId, parentBoxId) => {
+        setTabs(ts => {
+          const newTs = ts.map(t => ({ ...t, boxes: t.boxes.map(b => ({ ...b, links: [...b.links], boxes: [...(b.boxes || [])] })) }));
+          let moving = null;
+          for (const tab of newTs) {
+            const idx = tab.boxes.findIndex(b => b.id === boxId);
+            if (idx !== -1) { [moving] = tab.boxes.splice(idx, 1); break; }
+          }
+          if (!moving) return ts;
+          for (const tab of newTs) {
+            const parent = tab.boxes.find(b => b.id === parentBoxId);
+            if (parent) {
+              parent.boxes = [...(parent.boxes || []), { ...moving, minimized: false }];
+              // Compact columns after the removal
+              const usedCols = [...new Set(tab.boxes.map(b => b.col ?? 0))].sort((a, b) => a - b);
+              const colMap = Object.fromEntries(usedCols.map((c, i) => [c, i]));
+              tab.boxes.forEach(b => { b.col = colMap[b.col ?? 0] ?? 0; });
+              break;
+            }
+          }
+          return newTs;
+        });
+      };
+
+      // Move a box to a specific column + position within a target tab.
+      // toCol: column index; insertIdx: position within that column (Infinity = append).
+      // Also handles extraction of sub-boxes (searches nested boxes too).
+      const dndMoveBox = (boxId, toTabId, toCol, insertIdx) => {
+        setTabs(ts => {
+          const newTs = ts.map(t => ({ ...t, boxes: t.boxes.map(b => ({ ...b, links: [...b.links], boxes: [...(b.boxes || [])] })) }));
+
+          // Remove from wherever it lives — top-level or nested
+          let moving = null;
+          for (const tab of newTs) {
+            const idx = tab.boxes.findIndex(b => b.id === boxId);
+            if (idx !== -1) { [moving] = tab.boxes.splice(idx, 1); break; }
+            // Search inside sub-boxes
+            for (const parentBox of tab.boxes) {
+              const subIdx = (parentBox.boxes || []).findIndex(b => b.id === boxId);
+              if (subIdx !== -1) { [moving] = parentBox.boxes.splice(subIdx, 1); break; }
+            }
+            if (moving) break;
+          }
+          if (!moving) return ts;
+
+          const tgtTab = newTs.find(t => t.id === toTabId);
+          if (!tgtTab) return ts;
+
+          moving.col = toCol;
+
+          // Insert at position within target column
+          const colBoxes = tgtTab.boxes
+            .filter(b => (b.col ?? 0) === toCol)
+            .sort((a, b) => a.order - b.order);
+          const safe = Math.min(Math.max(0, insertIdx), colBoxes.length);
+          colBoxes.splice(safe, 0, moving);
+          colBoxes.forEach((b, i) => { b.order = i; b.col = toCol; });
+
+          // Add moving box to tgtTab if it came from a different tab
+          if (!tgtTab.boxes.find(b => b.id === moving.id)) tgtTab.boxes.push(moving);
+
+          // Compact columns: remove gaps in column indices
+          const usedCols = [...new Set(tgtTab.boxes.map(b => b.col ?? 0))].sort((a, b) => a - b);
+          const colMap = Object.fromEntries(usedCols.map((c, i) => [c, i]));
+          tgtTab.boxes.forEach(b => { b.col = colMap[b.col ?? 0] ?? 0; });
+
+          return newTs;
+        });
+      };
+
+      // Move a link across boxes (which may live in different tabs).
+      const dndMoveLink = (linkId, fromBoxId, toBoxId, insertIdx) => {
+        setTabs(ts => {
+          const newTs = ts.map(t => ({ ...t, boxes: t.boxes.map(b => ({ ...b, links: [...b.links] })) }));
+          let moving = null;
+          for (const tab of newTs) {
+            const src = tab.boxes.find(b => b.id === fromBoxId);
+            if (src) {
+              const idx = src.links.findIndex(l => l.id === linkId);
+              if (idx !== -1) { [moving] = src.links.splice(idx, 1); src.links.forEach((l, i) => l.order = i); break; }
+            }
+          }
+          if (!moving) return ts;
+          for (const tab of newTs) {
+            const tgt = tab.boxes.find(b => b.id === toBoxId);
+            if (tgt) {
+              tgt.links.splice(Math.min(Math.max(0, insertIdx), tgt.links.length), 0, moving);
+              tgt.links.forEach((l, i) => l.order = i);
+              break;
+            }
+          }
+          return newTs;
+        });
+      };
+
+      // ── DnD: tab bar event handlers ───────────────────────────────────────────
+
+      const handleTabDragOver = (tabId, e) => {
+        if (!activeDrag) return;
+        if (activeDrag.type === 'tab' && activeDrag.id === tabId) return;
+        if (activeDrag.type !== 'tab' && activeDrag.type !== 'box') return;
+        e.preventDefault();
+        if (activeDrag.type === 'box') {
+          setTabDrop(p => p?.tabId === tabId && p?.indicator === 'box-target' ? p : { tabId, indicator: 'box-target' });
+        } else {
+          const side = e.clientX > e.currentTarget.getBoundingClientRect().left + e.currentTarget.offsetWidth / 2 ? 'right' : 'left';
+          setTabDrop(p => p?.tabId === tabId && p?.indicator === side ? p : { tabId, indicator: side });
+        }
+      };
+
+      const handleTabDragLeave = tabId => setTabDrop(p => p?.tabId === tabId ? null : p);
+
+      const handleTabDrop = (tabId, e) => {
+        e.preventDefault();
+        const state = tabDrop; setTabDrop(null);
+        if (!activeDrag || !state) return;
+        if (activeDrag.type === 'tab') {
+          dndMoveTab(activeDrag.id, tabId, state.indicator);
+        } else if (activeDrag.type === 'box') {
+          dndMoveBox(activeDrag.id, tabId, 0, Infinity);
+          setActiveTabId(tabId);
+        }
+        activeDrag = null;
+      };
+
+      // ── DnD: box grid event handlers ─────────────────────────────────────────
+
+      const handleBoxDragOver = (boxId, e) => {
+        if (!activeDrag || activeDrag.type !== 'box' || activeDrag.id === boxId) return;
+        e.preventDefault(); e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const relY = e.clientY - rect.top;
+        let position;
+        if (relY < 28) position = 'above';                      // top ~header height
+        else if (relY > rect.height - 44) position = 'nest';   // bottom ~tray height
+        else position = relY < rect.height / 2 ? 'above' : 'below';
+        setBoxDrop(p => p?.boxId === boxId && p?.position === position ? p : { boxId, position });
+      };
+
+      const handleBoxDragLeave = boxId => setBoxDrop(p => p?.boxId === boxId ? null : p);
+
+      const handleBoxDrop = (boxId, colIdx, e) => {
+        e.preventDefault(); e.stopPropagation();
+        const state = boxDrop; setBoxDrop(null); setColDrop(null);
+        if (!activeDrag || activeDrag.type !== 'box' || !state) return;
+        if (state.position === 'nest') {
+          dndNestBox(activeDrag.id, boxId);
+        } else {
+          const colBoxes = (activeTab?.boxes ?? [])
+            .filter(b => (b.col ?? 0) === colIdx && b.id !== activeDrag.id)
+            .sort((a, b) => a.order - b.order);
+          const targetIdx = colBoxes.findIndex(b => b.id === boxId);
+          const insertIdx = state.position === 'above' ? targetIdx : targetIdx + 1;
+          dndMoveBox(activeDrag.id, resolvedActiveTabId, colIdx, insertIdx);
+        }
+        activeDrag = null;
+      };
+
+      const handleColDragOver = (colIdx, e) => {
+        if (!activeDrag || activeDrag.type !== 'box') return;
+        e.preventDefault();
+        setColDrop(p => p?.colIdx === colIdx ? p : { colIdx });
+      };
+
+      const handleColDrop = (colIdx, e) => {
+        e.preventDefault();
+        setColDrop(null); setBoxDrop(null);
+        if (!activeDrag || activeDrag.type !== 'box') return;
+        const colBoxes = (activeTab?.boxes ?? []).filter(b => (b.col ?? 0) === colIdx);
+        dndMoveBox(activeDrag.id, resolvedActiveTabId, colIdx, colBoxes.length);
+        activeDrag = null;
+      };
+
+      // ── Tab CRUD ──────────────────────────────────────────────────────────────
+
+      const addTab = () => {
+        const t = { id: uid(), name: 'New Tab', color: '#4A90D9', order: tabs.length, boxes: [] };
+        setTabs(ts => [...ts, t]); setActiveTabId(t.id);
+      };
+
+      const updateTab = updated => setTabs(ts => ts.map(t => t.id === updated.id ? updated : t));
+
+      const deleteTab = id => {
+        if (tabs.length === 1) { alert('Cannot delete the last tab.'); return; }
+        if (!window.confirm('Delete this tab and all its boxes?')) return;
+        const remaining = tabs.filter(t => t.id !== id);
+        setTabs(remaining);
+        if (resolvedActiveTabId === id) setActiveTabId(remaining[0].id);
+      };
+
+      const moveTab = (idx, dir) => {
+        const ni = idx + dir; if (ni < 0 || ni >= tabs.length) return;
+        const ts = [...tabs]; [ts[idx], ts[ni]] = [ts[ni], ts[idx]];
+        setTabs(ts.map((t, i) => ({ ...t, order: i })));
+      };
+
+      // ── Box CRUD ──────────────────────────────────────────────────────────────
+
+      const updateActiveTab = fn => setTabs(ts => ts.map(t => t.id === resolvedActiveTabId ? fn(t) : t));
+
+      const addBox = (col = 0) => {
+        const colBoxes = (activeTab?.boxes ?? []).filter(b => (b.col ?? 0) === col);
+        const b = { id: uid(), name: 'New Box', color: '#F5A623', order: colBoxes.length, links: [], boxes: [], width: 260, col };
+        updateActiveTab(t => ({ ...t, boxes: [...t.boxes, b] }));
+      };
+
+      const addColumn = () => {
+        const maxCol = activeTab ? Math.max(0, ...activeTab.boxes.map(b => b.col ?? 0)) : 0;
+        // Just adding a column creates a visual slot; it becomes real when a box lands in it.
+        // We trigger this by adding an empty box so the column persists. Instead, just
+        // note the new col index and add a box there.
+        addBox(activeTab?.boxes.length === 0 ? 0 : maxCol + 1);
+      };
+
+      // updateBox touches any tab. When width changes, sync to all boxes in the same column.
+      const updateBox = updated => setTabs(ts => ts.map(t => {
+        const original = t.boxes.find(b => b.id === updated.id);
+        if (!original) return t;
+        const widthChanged = original.width !== updated.width;
+        if (!widthChanged) return { ...t, boxes: t.boxes.map(b => b.id === updated.id ? updated : b) };
+        const col = updated.col ?? 0;
+        return {
+          ...t,
+          boxes: t.boxes.map(b => {
+            if (b.id === updated.id) return updated;
+            if ((b.col ?? 0) === col) return { ...b, width: updated.width };
+            return b;
+          }),
+        };
+      }));
+
+      const deleteBox = id => {
+        if (!window.confirm('Delete this box and all its links?')) return;
+        updateActiveTab(t => ({ ...t, boxes: t.boxes.filter(b => b.id !== id) }));
+      };
+
+      const handleImport = importedTabs => {
+        setTabs(importedTabs);
+        if (importedTabs.length > 0) setActiveTabId(importedTabs[0].id);
+      };
+
+      return (
+        <div style={{ minHeight: '100vh' }}>
+
+          {/* Tab bar — sticky, drag-and-drop for tabs and as drop target for boxes */}
+          <div style={{ background: 'var(--surface)', boxShadow: '0 1px 4px var(--shadow)', display: 'flex', alignItems: 'stretch', padding: '0 4px', overflowX: 'auto', position: 'sticky', top: 0, zIndex: 100 }}>
+            {tabs.map((tab, idx) => (
+              <TabItem key={tab.id} tab={tab}
+                isActive={tab.id === resolvedActiveTabId}
+                onSelect={() => setActiveTabId(tab.id)}
+                onUpdate={updateTab} onDelete={() => deleteTab(tab.id)}
+                isFirst={idx === 0} isLast={idx === tabs.length - 1}
+                onMoveLeft={() => moveTab(idx, -1)} onMoveRight={() => moveTab(idx, 1)}
+                dropIndicator={tabDrop?.tabId === tab.id ? tabDrop.indicator : null}
+                onDragOver={e => handleTabDragOver(tab.id, e)}
+                onDragLeave={() => handleTabDragLeave(tab.id)}
+                onDrop={e => handleTabDrop(tab.id, e)}
+              />
+            ))}
+            <button onClick={addTab} title="Add tab"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 14px', fontSize: 22, color: 'var(--text-muted)', alignSelf: 'center', lineHeight: 1 }}>+</button>
+            {/* Dark mode toggle — top-right of tab bar */}
+            <button onClick={() => setDark(d => !d)} title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+              style={{ marginLeft: 'auto', marginRight: 6, background: 'none', border: '1px solid var(--border-mid)', borderRadius: 20, cursor: 'pointer', padding: '3px 10px', fontSize: 13, color: 'var(--text)', alignSelf: 'center', whiteSpace: 'nowrap' }}>
+              {dark ? '☀ Light' : '☽ Dark'}
+            </button>
+          </div>
+
+          {/* Box grid — column-based layout */}
+          {activeTab && (() => {
+            const maxCol = activeTab.boxes.length === 0 ? 0 : Math.max(...activeTab.boxes.map(b => b.col ?? 0));
+            const getColBoxes = col => activeTab.boxes
+              .filter(b => (b.col ?? 0) === col)
+              .sort((a, b) => a.order - b.order);
+
+            return (
+              <div style={{ padding: 20, display: 'flex', gap: 16, alignItems: 'flex-start', overflowX: 'auto', minHeight: 120 }}>
+                {Array.from({ length: maxCol + 1 }, (_, colIdx) => {
+                  const colBoxes = getColBoxes(colIdx);
+                  const isColOver = colDrop?.colIdx === colIdx && !boxDrop;
+                  return (
+                    <div key={colIdx}
+                      onDragOver={e => handleColDragOver(colIdx, e)}
+                      onDragLeave={() => setColDrop(p => p?.colIdx === colIdx ? null : p)}
+                      onDrop={e => handleColDrop(colIdx, e)}
+                      style={{
+                        display: 'flex', flexDirection: 'column', gap: 12,
+                        minWidth: 220, padding: 8, borderRadius: 8,
+                        background: isColOver ? 'rgba(74,144,217,0.06)' : 'transparent',
+                        border: `2px dashed ${isColOver ? '#4A90D9' : 'transparent'}`,
+                        transition: 'border-color 0.1s, background 0.1s',
+                      }}>
+                      {colBoxes.map(box => (
+                        <BoxCard key={box.id} box={box} tabId={resolvedActiveTabId}
+                          onUpdate={updateBox} onDelete={() => deleteBox(box.id)}
+                          dropSide={boxDrop?.boxId === box.id ? boxDrop.position : null}
+                          onBoxDragOver={e => handleBoxDragOver(box.id, e)}
+                          onBoxDragLeave={() => handleBoxDragLeave(box.id)}
+                          onBoxDrop={e => handleBoxDrop(box.id, colIdx, e)}
+                          onDropLink={dndMoveLink}
+                          onNestBox={dndNestBox}
+                          dragWidth={colWidthDrag?.col === colIdx ? colWidthDrag.width : null}
+                          onWidthDrag={(width) => width == null ? setColWidthDrag(null) : setColWidthDrag({ col: colIdx, width })}
+                        />
+                      ))}
+                      {colBoxes.length === 0 && !isColOver && (
+                        <div style={{ color: 'var(--text-muted)', fontSize: 12, textAlign: 'center', padding: '12px 0', opacity: 0.6 }}>
+                          Drop box here
+                        </div>
+                      )}
+                      <button onClick={() => addBox(colIdx)} style={{ ...S.btnGhost, fontSize: 12 }}>+ Add box</button>
+                    </div>
+                  );
+                })}
+                {/* New column drop zone — also clickable to add a column */}
+                <div
+                  onClick={addColumn}
+                  onDragOver={e => { if (activeDrag?.type === 'box') { e.preventDefault(); setNewColOver(true); } }}
+                  onDragLeave={() => setNewColOver(false)}
+                  onDrop={e => {
+                    e.preventDefault();
+                    setNewColOver(false); setColDrop(null); setBoxDrop(null);
+                    if (!activeDrag || activeDrag.type !== 'box') return;
+                    const newCol = maxCol + 1;
+                    dndMoveBox(activeDrag.id, resolvedActiveTabId, newCol, 0);
+                    activeDrag = null;
+                  }}
+                  style={{
+                    alignSelf: 'stretch', minWidth: newColOver ? 120 : 48,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    borderRadius: 8, padding: '8px 4px',
+                    border: `2px dashed ${newColOver ? '#4A90D9' : 'var(--ghost-border)'}`,
+                    background: newColOver ? 'rgba(74,144,217,0.06)' : 'transparent',
+                    color: newColOver ? '#4A90D9' : 'var(--text-muted)',
+                    fontSize: 12, cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    opacity: newColOver ? 1 : 0.4,
+                  }}>
+                  {newColOver ? 'New column' : '+'}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Gear button */}
+          <button onClick={() => setShowSettings(true)} title="Settings"
+            style={{ position: 'fixed', bottom: 20, right: 20, width: 42, height: 42, borderRadius: '50%', background: 'var(--surface)', border: '1px solid var(--border-mid)', boxShadow: '0 2px 10px var(--shadow-md)', cursor: 'pointer', fontSize: 18, lineHeight: 1, zIndex: 90 }}>⚙</button>
+
+          {showSettings && <SettingsModal tabs={tabs} onImport={handleImport} onClose={() => setShowSettings(false)} />}
+
+
+        </div>
+      );
+    }
+
+    // ─── Mount ───────────────────────────────────────────────────────────────────
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
