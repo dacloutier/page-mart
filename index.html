@@ -345,7 +345,12 @@
             <InlineEdit value={box.name} onSave={name => onUpdate({ ...box, name })}
               style={{ flex: 1, fontWeight: 600, fontSize: 13, color: textColor }} />
             {headerHover && (
-              <button onClick={onDelete} title="Delete" style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 15 }}>×</button>
+              <>
+                <button onClick={e => { e.stopPropagation(); setAddingLink(true); }} title="Add link"
+                  style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 15 }}>+</button>
+                <div style={{ width: 8 }} />
+                <button onClick={onDelete} title="Delete" style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 15 }}>×</button>
+              </>
             )}
           </div>
           {!minimized && (
@@ -363,13 +368,7 @@
                   onDrop={e => handleLinkDrop(link.id, e)}
                 />
               ))}
-              {addingLink
-                ? <AddLinkForm onAdd={addLink} onCancel={() => setAddingLink(false)} />
-                : (
-                  <div style={{ padding: '4px 10px 8px' }}>
-                    <button onClick={() => setAddingLink(true)} style={{ ...S.btnGhost, fontSize: 11, width: '100%' }}>+ Add link</button>
-                  </div>
-                )}
+              {addingLink && <AddLinkForm onAdd={addLink} onCancel={() => setAddingLink(false)} />}
             </div>
           )}
         </div>
@@ -384,6 +383,7 @@
       const [addingLink, setAddingLink] = useState(false);
       const [headerHover, setHeaderHover] = useState(false);
       const [linkDrop, setLinkDrop] = useState(null); // { linkId, position: 'above'|'below' }
+      const [subBoxDrop, setSubBoxDrop] = useState(null); // { subBoxId, position: 'above'|'below' }
       const [emptyOver, setEmptyOver] = useState(false);
       const [localHeight, setLocalHeight] = useState(null);
       const emptyEnterCount = useRef(0);
@@ -493,6 +493,29 @@
       const updateSubBox = updated => onUpdate({ ...box, boxes: (box.boxes || []).map(b => b.id === updated.id ? updated : b) });
       const deleteSubBox = id => onUpdate({ ...box, boxes: (box.boxes || []).filter(b => b.id !== id) });
 
+      const handleSubBoxDragOver = (subBoxId, e) => {
+        if (!activeDrag || activeDrag.type !== 'box' || activeDrag.sourceParentBoxId !== box.id) return;
+        e.preventDefault(); e.stopPropagation();
+        const rect = e.currentTarget.getBoundingClientRect();
+        const position = e.clientY < rect.top + rect.height / 2 ? 'above' : 'below';
+        setSubBoxDrop(prev => (prev?.subBoxId === subBoxId && prev?.position === position) ? prev : { subBoxId, position });
+      };
+      const handleSubBoxDrop = (subBoxId, e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!activeDrag || activeDrag.type !== 'box' || activeDrag.sourceParentBoxId !== box.id) return;
+        const pos = subBoxDrop?.position || 'below';
+        const boxes = [...(box.boxes || [])];
+        const fromIdx = boxes.findIndex(b => b.id === activeDrag.id);
+        const toIdx = boxes.findIndex(b => b.id === subBoxId);
+        if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) { setSubBoxDrop(null); activeDrag = null; return; }
+        let insertIdx = pos === 'above' ? toIdx : toIdx + 1;
+        if (fromIdx < insertIdx) insertIdx--;
+        const [item] = boxes.splice(fromIdx, 1);
+        boxes.splice(insertIdx, 0, item);
+        onUpdate({ ...box, boxes: boxes.map((b, i) => ({ ...b, order: i })) });
+        setSubBoxDrop(null); activeDrag = null;
+      };
+
       return (
         <div ref={boxRef} onDragOver={onBoxDragOver} onDragLeave={onBoxDragLeave} onDrop={onBoxDrop}
           style={{
@@ -515,6 +538,12 @@
               style={{ flex: 1, fontWeight: 600, fontSize: 14, color: textColor }} />
             {headerHover && (
               <div style={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+                <button onClick={e => { e.stopPropagation(); setAddingLink(true); }} title="Add link"
+                  style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 16 }}>+</button>
+                <div style={{ width: 8 }} />
+                <button onClick={e => { e.stopPropagation(); addSubBox(); }} title="Add sub-box"
+                  style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 16 }}>⊞</button>
+                <div style={{ width: 8 }} />
                 <button onClick={onDelete} title="Delete box"
                   style={{ ...S.iconBtn, color: textColor, opacity: 0.8, fontSize: 16 }}>×</button>
               </div>
@@ -536,13 +565,7 @@
                 onDrop={e => handleLinkDrop(link.id, e)}
               />
             ))}
-            {addingLink
-              ? <AddLinkForm onAdd={addLink} onCancel={() => setAddingLink(false)} />
-              : (
-                <div style={{ padding: '6px 12px 10px' }}>
-                  <button onClick={() => setAddingLink(true)} style={{ ...S.btnGhost, fontSize: 12, width: '100%' }}>+ Add link</button>
-                </div>
-              )}
+            {addingLink && <AddLinkForm onAdd={addLink} onCancel={() => setAddingLink(false)} />}
           </div>
 
           {/* Sub-boxes tray */}
@@ -552,21 +575,29 @@
               borderRadius: '0 0 8px 8px', padding: '6px 8px 8px',
               transition: 'background 0.1s',
             }}>
-            {(box.boxes || []).map(subBox => (
-              <SubBoxCard key={subBox.id} box={subBox}
-                onUpdate={updateSubBox}
-                onDelete={() => deleteSubBox(subBox.id)}
-                onDragStart={e => {
-                  activeDrag = { type: 'box', id: subBox.id, sourceParentBoxId: box.id };
-                  e.dataTransfer.effectAllowed = 'move';
-                  e.dataTransfer.setData('text/plain', subBox.id);
-                }}
-                onDropLink={onDropLink}
-              />
-            ))}
-            {dropSide === 'nest'
-              ? <div style={{ color: '#4A90D9', fontSize: 11, textAlign: 'center', padding: '4px 0' }}>Drop to nest</div>
-              : <button onClick={addSubBox} style={{ ...S.btnGhost, fontSize: 11, width: '100%', padding: '4px 8px' }}>+ Sub-box</button>
+            {(box.boxes || []).map(subBox => {
+              const drop = subBoxDrop?.subBoxId === subBox.id ? subBoxDrop.position : null;
+              return (
+                <div key={subBox.id}
+                  onDragOver={e => handleSubBoxDragOver(subBox.id, e)}
+                  onDragLeave={() => setSubBoxDrop(prev => prev?.subBoxId === subBox.id ? null : prev)}
+                  onDrop={e => handleSubBoxDrop(subBox.id, e)}
+                  style={{ borderTop: drop === 'above' ? '2px solid #4A90D9' : '2px solid transparent', borderBottom: drop === 'below' ? '2px solid #4A90D9' : '2px solid transparent' }}>
+                  <SubBoxCard box={subBox}
+                    onUpdate={updateSubBox}
+                    onDelete={() => deleteSubBox(subBox.id)}
+                    onDragStart={e => {
+                      activeDrag = { type: 'box', id: subBox.id, sourceParentBoxId: box.id };
+                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', subBox.id);
+                    }}
+                    onDropLink={onDropLink}
+                  />
+                </div>
+              );
+            })}
+            {dropSide === 'nest' &&
+              <div style={{ color: '#4A90D9', fontSize: 11, textAlign: 'center', padding: '4px 0' }}>Drop to nest</div>
             }
           </div>
 
@@ -717,6 +748,11 @@
           for (const tab of newTs) {
             const idx = tab.boxes.findIndex(b => b.id === boxId);
             if (idx !== -1) { [moving] = tab.boxes.splice(idx, 1); break; }
+            for (const parentBox of tab.boxes) {
+              const subIdx = (parentBox.boxes || []).findIndex(b => b.id === boxId);
+              if (subIdx !== -1) { [moving] = parentBox.boxes.splice(subIdx, 1); break; }
+            }
+            if (moving) break;
           }
           if (!moving) return ts;
           for (const tab of newTs) {
@@ -758,7 +794,13 @@
           const tgtTab = newTs.find(t => t.id === toTabId);
           if (!tgtTab) return ts;
 
+          const fromCol = moving.col ?? 0;
           moving.col = toCol;
+          if (activeDrag?.sourceParentBoxId || fromCol !== toCol) {
+            const colWidth = (tgtTab.boxes.find(b => (b.col ?? 0) === toCol && b.id !== moving.id) || {}).width || 260;
+            moving.width = colWidth;
+            delete moving.height;
+          }
 
           // Insert at position within target column
           const colBoxes = tgtTab.boxes
